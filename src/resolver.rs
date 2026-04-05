@@ -144,22 +144,19 @@ impl Resolver {
                                             drop(r);
                                         }
 
-                                        // Queue peer dependencies
+                                        // Queue peer dependencies (only as warnings, don't auto-install)
                                         if let Some(peer_deps) = meta.peer_dependencies {
-                                            let mut p = pending_clone.lock().unwrap();
                                             let r = resolved.lock().unwrap();
                                             for (peer_name, peer_range) in peer_deps {
-                                                // Peer deps are required but might already be satisfied
-                                                if !r.contains_key(&peer_name)
-                                                    && !p.iter().any(|(n, _)| n == &peer_name)
-                                                {
+                                                // Only warn if peer dep is NOT already resolved
+                                                // Peer deps should be provided by the parent project
+                                                if !r.contains_key(&peer_name) {
                                                     println!(
-                                                        "  ⚠ Peer dependency: {}@{} required by {}",
+                                                        "  ⚠ Optional peer dependency: {}@{} wanted by {} (not installed)",
                                                         peer_name, peer_range, pkg_name_clone
                                                     );
-                                                    p.push((peer_name, peer_range));
-                                                } else if r.contains_key(&peer_name) {
-                                                    // Check if the resolved version satisfies the peer requirement
+                                                } else {
+                                                    // Check version compatibility
                                                     let resolved_meta = r.get(&peer_name).unwrap();
                                                     println!(
                                                         "  ✓ Peer dependency satisfied: {}@{} (have {}) required by {}",
@@ -170,7 +167,6 @@ impl Resolver {
                                                     );
                                                 }
                                             }
-                                            drop(p);
                                             drop(r);
                                         }
 
@@ -278,20 +274,16 @@ impl Resolver {
                                                 drop(r);
                                             }
 
-                                            // Handle peer dependencies
+                                            // Handle peer dependencies (warnings only, don't auto-install)
                                             if let Some(peer_deps) = meta.peer_dependencies {
-                                                let mut p = pending_clone.lock().unwrap();
                                                 let r = resolved.lock().unwrap();
                                                 for (peer_name, peer_range) in peer_deps {
-                                                    if !r.contains_key(&peer_name)
-                                                        && !p.iter().any(|(n, _)| n == &peer_name)
-                                                    {
+                                                    if !r.contains_key(&peer_name) {
                                                         println!(
-                                                            "  ⚠ Peer dependency: {}@{} required by {}",
+                                                            "  ⚠ Optional peer dependency: {}@{} wanted by {} (not installed)",
                                                             peer_name, peer_range, pkg_name
                                                         );
-                                                        p.push((peer_name, peer_range));
-                                                    } else if r.contains_key(&peer_name) {
+                                                    } else {
                                                         let resolved_meta =
                                                             r.get(&peer_name).unwrap();
                                                         println!(
@@ -303,7 +295,6 @@ impl Resolver {
                                                         );
                                                     }
                                                 }
-                                                drop(p);
                                                 drop(r);
                                             }
 
