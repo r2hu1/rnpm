@@ -4,9 +4,9 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use indicatif::ProgressBar;
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
 
 pub struct Resolver {
     registry: Arc<RegistryClient>,
@@ -20,7 +20,7 @@ impl Resolver {
         Self {
             registry,
             resolved: Arc::new(Mutex::new(HashMap::new())),
-            semaphore: Arc::new(Semaphore::new(20)), // Limit concurrent requests
+            semaphore: Arc::new(Semaphore::new(30)), // 30 concurrent requests
             progress_bar: None,
         }
     }
@@ -30,189 +30,260 @@ impl Resolver {
         self
     }
 
-    /// Resolve a single package and all its dependencies using BFS with progress tracking
+    /// Resolve a single package recursively (kept for backward compatibility)
     pub fn resolve_recursive(&self, name: String, range: String) -> BoxFuture<'static, Result<()>> {
-        let registry = Arc::clone(&self.registry);
-        let resolved = Arc::clone(&self.resolved);
-        let semaphore = Arc::clone(&self.semaphore);
-        let progress_bar = self.progress_bar.clone();
+        let packages = vec![(name, range)];
+        let resolver = self.clone_resolver();
 
         async move {
-            // Use a queue for BFS: (package_name, version_range)
-            let mut queue: VecDeque<(String, String)> = VecDeque::new();
-            queue.push_back((name.clone(), range.clone()));
-
-            // Track which packages we've already queued to avoid duplicates
-            let mut queued: HashMap<String, String> = HashMap::new();
-            queued.insert(name.clone(), range.clone());
-            let mut resolved_count = 0;
-
-            while let Some((pkg_name, pkg_range)) = queue.pop_front() {
-                // Check if already resolved
-                {
-                    let lock = resolved.lock().unwrap();
-                    if lock.contains_key(&pkg_name) {
-                        continue;
-                    }
-                }
-
-                // Update progress
-                if let Some(ref pb) = progress_bar {
-                    pb.set_message(format!("Resolving {}...", pkg_name));
-                }
-
-                // Fetch metadata with semaphore limit
-                let _permit = semaphore.acquire().await.unwrap();
-                let metadata_res = registry.fetch_package_metadata(&pkg_name).await;
-
-                let version_meta = match metadata_res {
-                    Ok(metadata) => {
-                        match registry.resolve_version(&metadata, &pkg_range) {
-                            Ok(meta) => {
-                                // Mark as resolved
-                                {
-                                    let mut lock = resolved.lock().unwrap();
-                                    lock.insert(pkg_name.clone(), meta.clone());
-                                    resolved_count += 1;
-                                }
-
-                                // Update progress bar with count
-                                if let Some(ref pb) = progress_bar {
-                                    pb.set_message(format!(
-                                        "Resolved {} packages... (processing {})",
-                                        resolved_count, pkg_name
-                                    ));
-                                }
-
-                                Ok(meta)
-                            }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Err(e) => Err(e),
-                }?;
-
-                // Queue dependencies
-                if let Some(deps) = version_meta.dependencies {
-                    for (dep_name, dep_range) in deps {
-                        // Skip if already resolved or already queued
-                        {
-                            let lock = resolved.lock().unwrap();
-                            if lock.contains_key(&dep_name) {
-                                continue;
-                            }
-                        }
-
-                        if !queued.contains_key(&dep_name) {
-                            queued.insert(dep_name.clone(), dep_range.clone());
-                            queue.push_back((dep_name, dep_range));
-                        }
-                    }
-                }
-            }
-
+            resolver.resolve_multiple_internal(packages).await?;
             Ok(())
         }
         .boxed()
     }
 
-    /// Resolve multiple packages and all their dependencies using unified BFS with progress tracking
+    /// Resolve multiple packages using highly concurrent parallel workers
     pub fn resolve_multiple(
         &self,
         packages: Vec<(String, String)>,
     ) -> BoxFuture<'static, Result<usize>> {
-        let registry = Arc::clone(&self.registry);
-        let resolved = Arc::clone(&self.resolved);
-        let semaphore = Arc::clone(&self.semaphore);
-        let progress_bar = self.progress_bar.clone();
+        let resolver = self.clone_resolver();
 
-        async move {
-            // Use a queue for BFS: (package_name, version_range)
-            let mut queue: VecDeque<(String, String)> = VecDeque::new();
+        async move { resolver.resolve_multiple_internal(packages).await }.boxed()
+    }
 
-            // Add all root packages to the queue
-            for (name, range) in packages {
-                queue.push_back((name, range));
-            }
+    fn clone_resolver(&self) -> Self {
+        Self {
+            registry: Arc::clone(&self.registry),
+            resolved: Arc::clone(&self.resolved),
+            semaphore: Arc::clone(&self.semaphore),
+            progress_bar: self.progress_bar.clone(),
+        }
+    }
 
-            // Track which packages we've already queued to avoid duplicates
-            let mut queued: HashMap<String, String> = HashMap::new();
-            for (name, range) in queue.iter() {
-                queued.insert(name.clone(), range.clone());
-            }
+    /// Internal implementation with proper task management
+    async fn resolve_multiple_internal(&self, packages: Vec<(String, String)>) -> Result<usize> {
+        // Shared state
+        let pending: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let processing: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
-            let mut resolved_count = 0;
+        // Initialize with root packages
+        {
+            let mut p = pending.lock().unwrap();
+            *p = packages;
+        }
 
-            while let Some((pkg_name, pkg_range)) = queue.pop_front() {
-                // Check if already resolved
-                {
-                    let lock = resolved.lock().unwrap();
-                    if lock.contains_key(&pkg_name) {
-                        continue;
-                    }
+        let mut handles: Vec<JoinHandle<Result<()>>> = vec![];
+
+        loop {
+            // Get next pending package
+            let next_package = {
+                let mut p = pending.lock().unwrap();
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p.remove(0))
                 }
+            };
 
-                // Update progress
-                if let Some(ref pb) = progress_bar {
-                    pb.set_message(format!(
-                        "Resolving {}... ({} resolved)",
-                        pkg_name, resolved_count
-                    ));
-                    pb.enable_steady_tick(std::time::Duration::from_millis(120));
-                }
-
-                // Fetch metadata with semaphore limit
-                let _permit = semaphore.acquire().await.unwrap();
-                let metadata_res = registry.fetch_package_metadata(&pkg_name).await;
-
-                let version_meta = match metadata_res {
-                    Ok(metadata) => {
-                        match registry.resolve_version(&metadata, &pkg_range) {
-                            Ok(meta) => {
-                                // Mark as resolved
-                                {
-                                    let mut lock = resolved.lock().unwrap();
-                                    lock.insert(pkg_name.clone(), meta.clone());
-                                    resolved_count += 1;
-                                }
-
-                                // Update progress bar with count
-                                if let Some(ref pb) = progress_bar {
-                                    pb.set_message(format!(
-                                        "Resolved {} packages... (processing {})",
-                                        resolved_count, pkg_name
-                                    ));
-                                }
-
-                                Ok(meta)
-                            }
-                            Err(e) => Err(e),
+            match next_package {
+                Some((pkg_name, pkg_range)) => {
+                    // Check if already resolved
+                    {
+                        let r = self.resolved.lock().unwrap();
+                        if r.contains_key(&pkg_name) {
+                            continue;
                         }
                     }
-                    Err(e) => Err(e),
-                }?;
 
-                // Queue dependencies
-                if let Some(deps) = version_meta.dependencies {
-                    for (dep_name, dep_range) in deps {
-                        // Skip if already resolved or already queued
+                    // Update progress
+                    if let Some(ref pb) = self.progress_bar {
+                        let count = self.resolved.lock().unwrap().len();
+                        let pend_count = pending.lock().unwrap().len();
+                        pb.set_message(format!(
+                            "Resolving {}... ({} resolved, {} pending)",
+                            pkg_name, count, pend_count
+                        ));
+                    }
+
+                    // Clone for task
+                    let registry = Arc::clone(&self.registry);
+                    let resolved = Arc::clone(&self.resolved);
+                    let pending_clone = Arc::clone(&pending);
+                    let semaphore = Arc::clone(&self.semaphore);
+                    let pb_clone = self.progress_bar.clone();
+                    let pkg_name_clone = pkg_name.clone();
+
+                    // Spawn concurrent task
+                    let handle = tokio::spawn(async move {
+                        // Fetch with semaphore control
+                        let _permit = semaphore.acquire().await.unwrap();
+
+                        match registry.fetch_package_metadata(&pkg_name_clone).await {
+                            Ok(metadata) => {
+                                match registry.resolve_version(&metadata, &pkg_range) {
+                                    Ok(meta) => {
+                                        // Store resolved package
+                                        {
+                                            let mut r = resolved.lock().unwrap();
+                                            r.insert(pkg_name_clone.clone(), meta.clone());
+                                        }
+
+                                        // Queue dependencies
+                                        if let Some(deps) = meta.dependencies {
+                                            let mut p = pending_clone.lock().unwrap();
+                                            let r = resolved.lock().unwrap();
+                                            for (dep_name, dep_range) in deps {
+                                                // Only add if not resolved and not already pending
+                                                if !r.contains_key(&dep_name)
+                                                    && !p.iter().any(|(n, _)| n == &dep_name)
+                                                {
+                                                    p.push((dep_name, dep_range));
+                                                }
+                                            }
+                                            drop(p);
+                                            drop(r);
+                                        }
+
+                                        if let Some(ref pb) = pb_clone {
+                                            let count = resolved.lock().unwrap().len();
+                                            let pend_count = pending_clone.lock().unwrap().len();
+                                            pb.set_message(format!(
+                                                "✓ {} ({} total, {} pending)",
+                                                pkg_name_clone, count, pend_count
+                                            ));
+                                        }
+
+                                        Ok(())
+                                    }
+                                    Err(e) => Err(anyhow::anyhow!(
+                                        "Failed to resolve version for {}: {}",
+                                        pkg_name_clone,
+                                        e
+                                    )),
+                                }
+                            }
+                            Err(e) => Err(anyhow::anyhow!(
+                                "Failed to fetch metadata for {}: {}",
+                                pkg_name_clone,
+                                e
+                            )),
+                        }
+                    });
+
+                    handles.push(handle);
+                }
+                None => {
+                    // No more pending packages
+                    // Wait for all running tasks to complete
+                    break;
+                }
+            }
+        }
+
+        // Wait for all spawned tasks to finish
+        for handle in handles {
+            let _ = handle.await;
+        }
+
+        // Final wait to ensure all dependencies are queued
+        // Keep checking until no new work appears
+        loop {
+            let pending_count = pending.lock().unwrap().len();
+            if pending_count == 0 {
+                break;
+            }
+
+            // Process remaining pending
+            let mut new_handles = vec![];
+
+            loop {
+                let next_package = {
+                    let mut p = pending.lock().unwrap();
+                    if p.is_empty() {
+                        None
+                    } else {
+                        Some(p.remove(0))
+                    }
+                };
+
+                match next_package {
+                    Some((pkg_name, pkg_range)) => {
+                        // Check if already resolved
                         {
-                            let lock = resolved.lock().unwrap();
-                            if lock.contains_key(&dep_name) {
+                            let r = self.resolved.lock().unwrap();
+                            if r.contains_key(&pkg_name) {
                                 continue;
                             }
                         }
 
-                        if !queued.contains_key(&dep_name) {
-                            queued.insert(dep_name.clone(), dep_range.clone());
-                            queue.push_back((dep_name, dep_range));
-                        }
+                        let registry = Arc::clone(&self.registry);
+                        let resolved = Arc::clone(&self.resolved);
+                        let pending_clone = Arc::clone(&pending);
+                        let semaphore = Arc::clone(&self.semaphore);
+                        let pb_clone = self.progress_bar.clone();
+
+                        let handle = tokio::spawn(async move {
+                            let _permit = semaphore.acquire().await.unwrap();
+
+                            match registry.fetch_package_metadata(&pkg_name).await {
+                                Ok(metadata) => {
+                                    match registry.resolve_version(&metadata, &pkg_range) {
+                                        Ok(meta) => {
+                                            {
+                                                let mut r = resolved.lock().unwrap();
+                                                r.insert(pkg_name.clone(), meta.clone());
+                                            }
+
+                                            if let Some(deps) = meta.dependencies {
+                                                let mut p = pending_clone.lock().unwrap();
+                                                let r = resolved.lock().unwrap();
+                                                for (dep_name, dep_range) in deps {
+                                                    if !r.contains_key(&dep_name)
+                                                        && !p.iter().any(|(n, _)| n == &dep_name)
+                                                    {
+                                                        p.push((dep_name, dep_range));
+                                                    }
+                                                }
+                                                drop(p);
+                                                drop(r);
+                                            }
+
+                                            if let Some(ref pb) = pb_clone {
+                                                let count = resolved.lock().unwrap().len();
+                                                pb.set_message(format!(
+                                                    "✓ {} ({} total)",
+                                                    pkg_name, count
+                                                ));
+                                            }
+
+                                            Ok(())
+                                        }
+                                        Err(e) => Err(anyhow::anyhow!("{}", e)),
+                                    }
+                                }
+                                Err(e) => Err(anyhow::anyhow!("{}", e)),
+                            }
+                        });
+
+                        new_handles.push(handle);
                     }
+                    None => break,
                 }
             }
 
-            Ok(resolved_count)
+            for handle in new_handles {
+                let _ = handle.await;
+            }
         }
-        .boxed()
+
+        let final_count = self.resolved.lock().unwrap().len();
+
+        if let Some(ref pb) = self.progress_bar {
+            pb.set_message(format!("Resolved {} packages", final_count));
+        }
+
+        Ok(final_count)
     }
 }
