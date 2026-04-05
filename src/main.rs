@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
                 }
 
                 if !packages_to_resolve.is_empty() {
-                    let resolved_count = resolver.resolve_multiple(packages_to_resolve).await?;
+                    resolver.resolve_multiple(packages_to_resolve).await?;
                     let resolved = resolver.resolved.lock().unwrap().clone();
                     pb.finish_with_message(format!("Resolved {} dependencies.", resolved.len()));
                     download_resolved_from_meta(&resolved, &downloader).await?;
@@ -139,25 +139,24 @@ async fn main() -> Result<()> {
             let package_json: PackageJson = serde_json::from_str(&content)?;
 
             let resolver = resolver::Resolver::new(Arc::clone(&registry)).with_progress(pb.clone());
-            let mut futures = vec![];
+
+            // Collect all dependencies into a single list for unified BFS resolution
+            let mut packages_to_resolve = vec![];
 
             if let Some(deps) = package_json.dependencies {
                 for (name, range) in deps {
-                    futures.push(resolver.resolve_recursive(name, range));
+                    packages_to_resolve.push((name, range));
                 }
             }
 
             if let Some(dev_deps) = package_json.dev_dependencies {
                 for (name, range) in dev_deps {
-                    futures.push(resolver.resolve_recursive(name, range));
+                    packages_to_resolve.push((name, range));
                 }
             }
 
-            if !futures.is_empty() {
-                futures::future::join_all(futures)
-                    .await
-                    .into_iter()
-                    .collect::<Result<Vec<()>>>()?;
+            if !packages_to_resolve.is_empty() {
+                resolver.resolve_multiple(packages_to_resolve).await?;
                 let resolved = resolver.resolved.lock().unwrap().clone();
                 pb.finish_with_message(format!("Updated {} dependencies.", resolved.len()));
                 download_resolved_from_meta(&resolved, &downloader).await?;
