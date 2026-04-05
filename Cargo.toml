@@ -2,6 +2,10 @@
 name = "rnpm"
 version = "0.1.0"
 edition = "2024"
+authors = ["r2hu1 <https://github.com/r2hu1>"]
+description = "A fast Rust-based Node Package Manager"
+repository = "https://github.com/r2hu1/rnpm"
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1.36", features = ["full"] }
