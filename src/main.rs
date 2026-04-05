@@ -78,10 +78,43 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Handle global flags
+    if cli.version {
+        println!("rnpm {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    if cli.author {
+        println!("rnpm is developed by the rnpm contributors");
+        return Ok(());
+    }
+
+    // Require a subcommand if no flags were provided
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            eprintln!("Error: No subcommand provided\n");
+            eprintln!("Usage: rnpm <COMMAND>");
+            eprintln!("\nCommands:");
+            eprintln!("  add       Add a new package to the dependencies");
+            eprintln!("  install   Install all dependencies from package.json");
+            eprintln!("  update    Update all dependencies from package.json");
+            eprintln!("  remove    Remove a package from the dependencies");
+            eprintln!("  run       Run a script defined in package.json");
+            eprintln!("  import    Import lock file from npm/yarn/pnpm/bun");
+            eprintln!("\nOptions:");
+            eprintln!("  -V, --version    Print version information");
+            eprintln!("      --author     Print author information");
+            eprintln!("  -h, --help       Print help information");
+            process::exit(1);
+        }
+    };
+
     let registry = Arc::new(registry::RegistryClient::new());
     let downloader = Arc::new(downloader::Downloader::new());
 
-    match &cli.command {
+    match &command {
         Commands::Add { package_name, dev } => {
             let pb = ProgressBar::new_spinner();
             pb.set_message(format!("Resolving {}...", package_name));
