@@ -18,9 +18,47 @@ A high-performance package manager for Node.js projects, written in Rust. Featur
 
 ## Installation
 
+### Quick Install (No Git Clone Required)
+
+**macOS/Linux:**
+
 ```bash
+curl -fsSL https://raw.githubusercontent.com/r2hu1/rnpm/main/scripts/install-standalone.sh | bash
+```
+
+Or download and run manually:
+
+```bash
+./scripts/install-standalone.sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/r2hu1/rnpm/main/scripts/install-standalone.ps1 | iex
+```
+
+Or download and run manually:
+
+```powershell
+.\scripts\install-standalone.ps1
+```
+
+### Manual Installation from Source
+
+If you prefer to build from source:
+
+```bash
+git clone https://github.com/r2hu1/rnpm.git
+cd rnpm
 cargo build --release
-./target/release/rnpm install
+cp target/release/rnpm ~/.local/bin/  # or any directory in your PATH
+```
+
+### Verify Installation
+
+```bash
+rnpm --version
 ```
 
 ## Usage
