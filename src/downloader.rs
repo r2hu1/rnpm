@@ -29,17 +29,56 @@ impl Downloader {
         let mut archive = Archive::new(tar_gz);
 
         let temp_dir = tempfile::tempdir()?;
+
+        // Unpack to temp directory
         archive.unpack(temp_dir.path())?;
 
         let package_path = temp_dir.path().join("package");
         if package_path.exists() {
-            fs::create_dir_all(destination.parent().unwrap())?;
+            // npm packages are usually in a "package" subdirectory
+            fs::create_dir_all(destination.parent().unwrap_or(Path::new(".")))?;
             fs::rename(package_path, destination)?;
         } else {
-             fs::create_dir_all(destination)?;
-             archive.unpack(destination)?;
+            // Fallback: find the actual package directory
+            let entries: Vec<_> = fs::read_dir(temp_dir.path())?
+                .filter_map(|e| e.ok())
+                .collect();
+
+            if entries.len() == 1 && entries[0].path().is_dir() {
+                // Single directory, rename it
+                fs::create_dir_all(destination.parent().unwrap_or(Path::new(".")))?;
+                fs::rename(entries[0].path(), destination)?;
+            } else {
+                // Multiple files, create destination and copy contents
+                fs::create_dir_all(destination)?;
+                for entry in entries {
+                    let src = entry.path();
+                    let dst = destination.join(entry.file_name());
+                    if src.is_dir() {
+                        fs::create_dir_all(&dst)?;
+                        copy_dir_all(&src, &dst)?;
+                    } else {
+                        fs::copy(src, dst)?;
+                    }
+                }
+            }
         }
 
         Ok(())
     }
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            let dst_path = dst.join(entry.file_name());
+            fs::create_dir_all(&dst_path)?;
+            copy_dir_all(&entry.path(), &dst_path)?;
+        } else {
+            fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
