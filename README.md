@@ -5,6 +5,7 @@ A high-performance package manager for Node.js projects, written in Rust. Featur
 ## Features
 
 - **Concurrent Dependency Resolution**: Resolves up to 30 packages simultaneously using parallel async workers
+- **Peer Dependency Resolution**: Automatically detects and resolves peer dependencies with real-time feedback
 - **Smart Deduplication**: Each package is fetched only once, even if multiple dependencies require it
 - **Real-time Progress Tracking**: Live updates showing resolved packages and pending work
 - **Metadata Caching**: In-memory cache prevents redundant API calls
@@ -108,10 +109,10 @@ Communicates with npm registry:
 
 ## Limitations
 
-- No peer dependency resolution yet
-- No workspace/monorepo support
+- No workspace/monorepo support yet
 - Limited to public npm registry
 - No offline mode
+- Peer dependency version validation is informational only (doesn't enforce strict compatibility)
 
 ## License
 

@@ -19,6 +19,8 @@ pub struct VersionMetadata {
     pub version: String,
     pub dist: Dist,
     pub dependencies: Option<HashMap<String, String>>,
+    #[serde(rename = "peerDependencies")]
+    pub peer_dependencies: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

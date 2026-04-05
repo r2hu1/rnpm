@@ -65,8 +65,6 @@ impl Resolver {
     async fn resolve_multiple_internal(&self, packages: Vec<(String, String)>) -> Result<usize> {
         // Shared state
         let pending: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-        let processing: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
 
         // Initialize with root packages
         {
@@ -140,6 +138,36 @@ impl Resolver {
                                                     && !p.iter().any(|(n, _)| n == &dep_name)
                                                 {
                                                     p.push((dep_name, dep_range));
+                                                }
+                                            }
+                                            drop(p);
+                                            drop(r);
+                                        }
+
+                                        // Queue peer dependencies
+                                        if let Some(peer_deps) = meta.peer_dependencies {
+                                            let mut p = pending_clone.lock().unwrap();
+                                            let r = resolved.lock().unwrap();
+                                            for (peer_name, peer_range) in peer_deps {
+                                                // Peer deps are required but might already be satisfied
+                                                if !r.contains_key(&peer_name)
+                                                    && !p.iter().any(|(n, _)| n == &peer_name)
+                                                {
+                                                    println!(
+                                                        "  ⚠ Peer dependency: {}@{} required by {}",
+                                                        peer_name, peer_range, pkg_name_clone
+                                                    );
+                                                    p.push((peer_name, peer_range));
+                                                } else if r.contains_key(&peer_name) {
+                                                    // Check if the resolved version satisfies the peer requirement
+                                                    let resolved_meta = r.get(&peer_name).unwrap();
+                                                    println!(
+                                                        "  ✓ Peer dependency satisfied: {}@{} (have {}) required by {}",
+                                                        peer_name,
+                                                        peer_range,
+                                                        resolved_meta.version,
+                                                        pkg_name_clone
+                                                    );
                                                 }
                                             }
                                             drop(p);
@@ -244,6 +272,35 @@ impl Resolver {
                                                         && !p.iter().any(|(n, _)| n == &dep_name)
                                                     {
                                                         p.push((dep_name, dep_range));
+                                                    }
+                                                }
+                                                drop(p);
+                                                drop(r);
+                                            }
+
+                                            // Handle peer dependencies
+                                            if let Some(peer_deps) = meta.peer_dependencies {
+                                                let mut p = pending_clone.lock().unwrap();
+                                                let r = resolved.lock().unwrap();
+                                                for (peer_name, peer_range) in peer_deps {
+                                                    if !r.contains_key(&peer_name)
+                                                        && !p.iter().any(|(n, _)| n == &peer_name)
+                                                    {
+                                                        println!(
+                                                            "  ⚠ Peer dependency: {}@{} required by {}",
+                                                            peer_name, peer_range, pkg_name
+                                                        );
+                                                        p.push((peer_name, peer_range));
+                                                    } else if r.contains_key(&peer_name) {
+                                                        let resolved_meta =
+                                                            r.get(&peer_name).unwrap();
+                                                        println!(
+                                                            "  ✓ Peer dependency satisfied: {}@{} (have {}) required by {}",
+                                                            peer_name,
+                                                            peer_range,
+                                                            resolved_meta.version,
+                                                            pkg_name
+                                                        );
                                                     }
                                                 }
                                                 drop(p);
