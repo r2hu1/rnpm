@@ -3,17 +3,24 @@ use flate2::read::GzDecoder;
 use reqwest::Client;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use tar::Archive;
+use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub struct Downloader {
     client: Client,
+    semaphore: Arc<Semaphore>,
 }
 
 impl Downloader {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap(),
+            semaphore: Arc::new(Semaphore::new(15)), // Limit to 15 concurrent downloads
         }
     }
 
@@ -21,6 +28,9 @@ impl Downloader {
         if destination.exists() {
             return Ok(());
         }
+
+        // Acquire permit to limit concurrent downloads
+        let _permit = self.semaphore.acquire().await.unwrap();
 
         let response = self.client.get(url).send().await?;
         let bytes = response.bytes().await?;
