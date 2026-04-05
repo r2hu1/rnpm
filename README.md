@@ -63,6 +63,15 @@ rnpm --version
 
 ## Usage
 
+### Global Options
+
+```bash
+rnpm --version      # Show version information
+rnpm -V             # Short form for version
+rnpm --author       # Show author information
+rnpm --help         # Show help message
+```
+
 ### Install Dependencies
 
 ```bash
