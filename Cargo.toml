@@ -1,0 +1,19 @@
+[package]
+name = "rnpm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.36", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
+flate2 = "1.0"
+tar = "0.4"
+semver = "1.0"
+futures = "0.3"
+tempfile = "3.10"
+indicatif = "0.17" # Progress bars
+walkdir = "2.4"
