@@ -17,3 +17,4 @@ futures = "0.3"
 tempfile = "3.10"
 indicatif = "0.17" # Progress bars
 walkdir = "2.4"
+serde_yaml = "0.9.34"
