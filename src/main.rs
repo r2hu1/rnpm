@@ -86,12 +86,9 @@ async fn main() -> Result<()> {
     }
 
     if cli.author {
-        println!(
-            "rnpm v{} by {} <{}>",
-            env!("CARGO_PKG_VERSION"),
-            env!("CARGO_PKG_AUTHORS"),
-            env!("CARGO_PKG_REPOSITORY")
-        );
+        println!("rnpm v{} - Created by r2hu1", env!("CARGO_PKG_VERSION"));
+        println!("Repository: {}", env!("CARGO_PKG_REPOSITORY"));
+        println!("GitHub: https://github.com/r2hu1");
         return Ok(());
     }
 
