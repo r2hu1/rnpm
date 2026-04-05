@@ -30,9 +30,18 @@ pub struct PackageJson {
 #[derive(Parser)]
 #[command(name = "rnpm")]
 #[command(about = "A fast Rust-based Node Package Manager", long_about = None)]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
+    /// Print version information
+    #[arg(short = 'V', long = "version")]
+    version: bool,
+
+    /// Print author information
+    #[arg(long = "author")]
+    author: bool,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
